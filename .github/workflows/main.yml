@@ -1,0 +1,93 @@
+# What happens when the main branch of a SpliceFS repository moves: the new version is
+# tagged, which starts the release, and every open pull request is rebuilt on the new tip.
+# A repository calls this workflow from its own .github/workflows/main.yml; see README.md.
+name: Main moved
+
+on:
+  workflow_call:
+    secrets:
+      bot-private-key:
+        description: Private key of the SpliceFS Release Bot
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  BOT_NAME: "splicefs-release-bot[bot]"
+  BOT_EMAIL: "355956135+splicefs-release-bot[bot]@users.noreply.github.com"
+
+jobs:
+  tag:
+    name: Tag the version
+    runs-on: ubuntu-latest
+    steps:
+      # A tag made with the token of the workflow itself would not start the release
+      # workflow. The bot's token does.
+      - name: Bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "No VERSION file; nothing to tag."
+            exit 0
+          fi
+          version="$(cat VERSION)"
+          case "$version" in
+            *[!0-9.]* | "" | .* | *. | *..*) echo "::error::VERSION holds '$version'"; exit 1 ;;
+          esac
+          tag="v$version"
+          if existing="$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha 2>/dev/null)"; then
+            if [ "$existing" = "$SHA" ]; then
+              echo "$tag already points at this commit."
+              exit 0
+            fi
+            # Every change raises the version, so this means a change reached main without
+            # the rules. It must not be released under a number that is already taken.
+            echo "::error::$tag exists on another commit; this commit did not raise VERSION."
+            exit 1
+          fi
+          gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$tag" -f "sha=$SHA" --silent
+          echo "Tagged $SHA as $tag."
+
+  rebase:
+    name: Rebuild open pull requests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: Bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: work
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+      - name: Rebuild every open pull request on the new tip
+        working-directory: work
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: ../rules/scripts/rebase-open-prs.sh "$REPO" "$BASE_BRANCH"

@@ -1,0 +1,111 @@
+# The rules every pull request of a SpliceFS repository must pass. A repository calls this
+# workflow from its own .github/workflows/rules.yml; see README.md.
+name: Pull request rules
+
+on:
+  workflow_call:
+    secrets:
+      bot-private-key:
+        description: Private key of the SpliceFS Release Bot
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # The identity GitHub shows for commits of the SpliceFS Release Bot.
+  BOT_NAME: "splicefs-release-bot[bot]"
+  BOT_EMAIL: "355956135+splicefs-release-bot[bot]@users.noreply.github.com"
+
+jobs:
+  scope:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.read.outputs.scope }}
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: Read change_scope from the description
+        id: read
+        env:
+          # Passed through the environment, never pasted into the script: the description is
+          # text that anyone can write.
+          BODY: ${{ github.event.pull_request.body }}
+          # Dependency bots cannot fill in the field. Their updates count as revisions.
+          DEFAULT_SCOPE: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'revision' || '' }}
+        run: |
+          scope="$(printf '%s\n' "$BODY" | rules/scripts/change-scope.sh)"
+          echo "change_scope: $scope"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+
+  version:
+    name: Version
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      # A commit pushed with the token of the workflow itself would not start the checks of
+      # the pull request again. The bot's token does.
+      - name: Bot token
+        id: bot
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Pull request branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: work
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token || github.token }}
+      - name: Version of the target branch
+        working-directory: work
+        env:
+          BASE_REPO: ${{ github.server_url }}/${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: git fetch --no-tags "$BASE_REPO" "+refs/heads/$BASE_BRANCH:refs/remotes/target/$BASE_BRANCH"
+      - name: Set the version in the branch
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: work
+        env:
+          SCOPE: ${{ needs.scope.outputs.scope }}
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          result="$(../rules/scripts/set-version.sh "$SCOPE")"
+          echo "$result"
+          case "$result" in
+            *"(committed)")
+              # This push starts the checks again on the commit that will be merged.
+              git push origin "HEAD:refs/heads/$HEAD_BRANCH"
+              ;;
+          esac
+      # The bot cannot push to a fork. There the author sets the version, and this checks it.
+      - name: Check the version in a fork
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        working-directory: work
+        env:
+          SCOPE: ${{ needs.scope.outputs.scope }}
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+        run: |
+          base="$(git show "$BASE_REF:VERSION" 2>/dev/null || echo 0.0.0)"
+          want="$(../rules/scripts/next-version.sh "$base" "$SCOPE")"
+          have="$(cat VERSION 2>/dev/null || true)"
+          if [ "$have" != "$want" ]; then
+            echo "::error::VERSION must be $want (target has $base, change_scope is $SCOPE); it is '$have'."
+            exit 1
+          fi
+          echo "version: $want"

@@ -16,8 +16,10 @@ permissions:
   contents: read
 
 env:
-  BOT_NAME: "splicefs-release-bot[bot]"
-  BOT_EMAIL: "355956135+splicefs-release-bot[bot]@users.noreply.github.com"
+  # The author of the commits this automation writes: the account splicefs-bot, whose address
+  # is the project's own. The release bot only pushes them.
+  BOT_NAME: "splicefs-bot"
+  BOT_EMAIL: "bot@splicefs.org"
 
 jobs:
   tag:

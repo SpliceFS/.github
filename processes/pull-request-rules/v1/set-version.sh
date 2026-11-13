@@ -49,6 +49,10 @@ if git cat-file -e HEAD:VERSION 2>/dev/null && git diff --cached --quiet -- VERS
 fi
 
 # Two -m options make the trailer its own paragraph, which is where git looks for trailers.
-git -c user.name="$BOT_NAME" -c user.email="$BOT_EMAIL" -c commit.gpgsign=false \
+# The identity goes in as environment variables: git prefers them over its configuration, so
+# an identity inherited from the caller's environment cannot replace the bot.
+GIT_AUTHOR_NAME="$BOT_NAME" GIT_AUTHOR_EMAIL="$BOT_EMAIL" \
+    GIT_COMMITTER_NAME="$BOT_NAME" GIT_COMMITTER_EMAIL="$BOT_EMAIL" \
+    git -c commit.gpgsign=false \
     commit -q --no-verify -m "Set version to $wanted" -m 'Version-Commit: true' -- VERSION
 echo "version: $wanted (committed)"

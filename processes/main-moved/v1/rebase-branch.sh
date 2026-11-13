@@ -65,9 +65,11 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 git worktree add -q --detach "$tmp/wt" "$onto_commit"
 
+# The committer goes in as environment variables: git prefers them over its configuration, so
+# a committer inherited from the caller's environment cannot replace the bot.
 wt() {
-    git -C "$tmp/wt" -c user.name="$BOT_NAME" -c user.email="$BOT_EMAIL" \
-        -c commit.gpgsign=false "$@"
+    GIT_COMMITTER_NAME="$BOT_NAME" GIT_COMMITTER_EMAIL="$BOT_EMAIL" \
+        git -C "$tmp/wt" -c commit.gpgsign=false "$@"
 }
 
 n=0
@@ -79,7 +81,7 @@ for c in $picks; do
     if wt diff --cached --quiet; then
         continue
     fi
-    # -C keeps author, date and message; the committer is the bot because of the -c options.
+    # -C keeps author, date and message; the committer is the bot (see wt).
     wt commit -q --no-verify -C "$c"
     n=$((n + 1))
 done

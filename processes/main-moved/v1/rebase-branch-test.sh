@@ -1,11 +1,11 @@
 #!/bin/sh
-# Test of scripts/rebase-branch.sh in throwaway git repositories: up to date, rebuilt after the
+# Test of rebase-branch.sh in throwaway git repositories: up to date, rebuilt after the
 # base moved, version commits dropped, conflicts, merge commits and commits the base already has.
 # Part of make check.
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
-script="$root/scripts/rebase-branch.sh"
+here="$(cd "$(dirname "$0")" && pwd)"
+script="$here/rebase-branch.sh"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failed=0
@@ -236,6 +236,6 @@ eq 'one argument prints usage' 'usage: rebase-branch.sh <branch> <onto>' "$out"
 rb
 eq 'no arguments print usage' 'usage: rebase-branch.sh <branch> <onto>' "$out"
 
-cd "$root"
+cd "$here"
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "rebase branch: all checks as expected"

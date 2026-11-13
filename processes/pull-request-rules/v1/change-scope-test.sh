@@ -1,16 +1,16 @@
 #!/bin/sh
-# Table test of scripts/change-scope.sh: which pull request descriptions give which scope, and
+# Table test of change-scope.sh: which pull request descriptions give which scope, and
 # which are refused with which message. Runs on the host (make change-scope-test, part of
 # make check). Descriptions are given as printf %b text so the table can show CRLF and newlines.
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$root"
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here"
 failed=0
 
 # $1 description, $2 DEFAULT_SCOPE (may be empty).
 run() {
-    printf '%b' "$1" | DEFAULT_SCOPE="$2" sh scripts/change-scope.sh
+    printf '%b' "$1" | DEFAULT_SCOPE="$2" sh change-scope.sh
 }
 
 # $1 label, $2 description, $3 wanted output, $4 optional DEFAULT_SCOPE.

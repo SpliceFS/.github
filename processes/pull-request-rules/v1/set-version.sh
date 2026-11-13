@@ -1,7 +1,7 @@
 #!/bin/sh
-# Makes VERSION on a pull request branch hold the version that follows the one on the target
-# branch for the given scope, as a commit of its own. It commits locally and never pushes, so the
-# caller decides when and how the result is published.
+# Makes VERSION on a pull request branch hold the version that follows the base version of the
+# target branch (see base-version.sh) for the given scope, as a commit of its own. It commits
+# locally and never pushes, so the caller decides when and how the result is published.
 set -eu
 
 fail() {
@@ -20,18 +20,14 @@ scope="$1"
 [ -n "${BOT_EMAIL:-}" ] || fail 'BOT_EMAIL is required'
 base_ref="${BASE_REF:-origin/main}"
 
-# The sibling script is found by this script's own directory so any working directory works.
+# The sibling scripts are found by this script's own directory so any working directory works.
 here="$(cd "$(dirname "$0")" && pwd)"
 top="$(git rev-parse --show-toplevel)" || fail 'not inside a git repository'
 cd "$top"
 
 git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null ||
     fail "base ref \"$base_ref\" does not exist"
-if git cat-file -e "$base_ref:VERSION" 2>/dev/null; then
-    base="$(git show "$base_ref:VERSION")"
-else
-    base=0.0.0
-fi
+base="$(sh "$here/base-version.sh" "$base_ref")"
 if ! wanted="$(sh "$here/next-version.sh" "$base" "$scope" 2>&1)"; then
     printf '%s\n' "$wanted" >&2
     exit 1

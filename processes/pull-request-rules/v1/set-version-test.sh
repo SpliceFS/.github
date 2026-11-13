@@ -1,10 +1,10 @@
 #!/bin/sh
-# Test of scripts/set-version.sh in throwaway git repositories: first version, revision and minor,
+# Test of set-version.sh in throwaway git repositories: first version, revision and minor,
 # unchanged, correcting a wrong committed value, and every refusal. Part of make check.
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
-script="$root/scripts/set-version.sh"
+here="$(cd "$(dirname "$0")" && pwd)"
+script="$here/set-version.sh"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failed=0
@@ -170,8 +170,24 @@ out="$(BASE_REF=origin/nope BOT_NAME=Bot BOT_EMAIL=bot@example.com sh "$script" 
 eq 'unknown BASE_REF is refused' 'set-version: base ref "origin/nope" does not exist' "$out"
 
 newrepo bad-base 'v1.2'
-expect_refused 'invalid base version is refused' 'next-version: "v1.2" is not X.Y.Z' revision
-eq 'invalid base: no commit' 1 "$(git rev-list --count origin/main..HEAD)"
+expect_ok 'invalid base VERSION is ignored' 'version: 0.0.1 (committed)' revision
+
+newrepo tag-only ''
+git tag v2.3.4 origin/main
+expect_ok 'release tag without a VERSION file is the base' 'version: 2.3.5 (committed)' revision
+
+newrepo tag-higher 1.2.3
+git tag v1.4.0 origin/main
+expect_ok 'release tag higher than VERSION is the base' 'version: 1.5.0 (committed)' minor
+
+newrepo file-higher 1.5.0
+git tag v1.4.0 origin/main
+expect_ok 'VERSION higher than the release tag is the base' 'version: 1.5.1 (committed)' revision
+
+newrepo tag-suffix 1.2.3
+git tag v1.9.0-rc.1 origin/main
+expect_ok 'tag with a suffix is ignored' 'version: 1.2.4 (committed)' revision
+
 newrepo bad-scope 1.2.3
 expect_refused 'bad scope is refused' \
     'next-version: scope "major" cannot be released from this repository' major
@@ -189,6 +205,6 @@ rc=0
 out="$(sh "$script" 2>&1)" || rc=$?
 refused 'no arguments print usage' 'usage: set-version.sh <scope>'
 
-cd "$root"
+cd "$here"
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "set version: all checks as expected"

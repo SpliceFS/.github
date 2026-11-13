@@ -1,10 +1,8 @@
 check:
-	sh scripts/change-scope-test.sh
-	sh scripts/next-version-test.sh
-	sh scripts/set-version-test.sh
-	sh scripts/rebase-branch-test.sh
+	sh processes/check-modes.sh
+	for test in $$(find processes -name '*-test.sh' | sort); do sh "$$test" || exit 1; done
 
 lint:
-	shellcheck --shell=sh scripts/*.sh
+	find processes -name '*.sh' | sort | xargs shellcheck --shell=sh
 
 .PHONY: check lint

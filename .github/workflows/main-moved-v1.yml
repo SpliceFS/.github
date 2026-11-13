@@ -1,6 +1,8 @@
 # What happens when the main branch of a SpliceFS repository moves: the new version is
 # tagged, which starts the release, and every open pull request is rebuilt on the new tip.
 # A repository calls this workflow from its own .github/workflows/main.yml; see README.md.
+# The number in the file name is the version of this process; see "Versions of these processes"
+# there.
 name: Main moved
 
 on:
@@ -90,4 +92,4 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           REPO: ${{ github.repository }}
           BASE_BRANCH: ${{ github.ref_name }}
-        run: ../rules/scripts/rebase-open-prs.sh "$REPO" "$BASE_BRANCH"
+        run: ../rules/processes/main-moved/v1/rebase-open-prs.sh "$REPO" "$BASE_BRANCH"

@@ -1,15 +1,15 @@
 #!/bin/sh
-# Table test of scripts/next-version.sh: the next version for each scope, and which inputs are
+# Table test of next-version.sh: the next version for each scope, and which inputs are
 # refused with which message. Runs on the host (make next-version-test, part of make check).
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$root"
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here"
 failed=0
 
 # $1 current version, $2 scope, $3 wanted next version.
 check() {
-    if got="$(sh scripts/next-version.sh "$1" "$2" 2>&1)"; then
+    if got="$(sh next-version.sh "$1" "$2" 2>&1)"; then
         if [ "$got" = "$3" ]; then
             printf 'ok   %-28s %-9s -> %s\n' "$1" "$2" "$3"
         else
@@ -24,14 +24,14 @@ check() {
 
 # $1 current version, $2 scope, $3 the exact message. Nothing may reach standard output.
 refuse() {
-    if out="$(sh scripts/next-version.sh "$1" "$2" 2>/dev/null)"; then
+    if out="$(sh next-version.sh "$1" "$2" 2>/dev/null)"; then
         printf 'FAIL %-28s %-9s was accepted: %s\n' "$1" "$2" "$out"
         failed=$((failed + 1))
     elif [ -n "$out" ]; then
         printf 'FAIL %-28s %-9s refused but printed: %s\n' "$1" "$2" "$out"
         failed=$((failed + 1))
     else
-        got="$(sh scripts/next-version.sh "$1" "$2" 2>&1 >/dev/null)" || true
+        got="$(sh next-version.sh "$1" "$2" 2>&1 >/dev/null)" || true
         if [ "$got" = "$3" ]; then
             printf 'ok   %-28s %-9s refused: %s\n' "$1" "$2" "$got"
         else
@@ -45,11 +45,11 @@ refuse() {
 usage() {
     label="$1"
     shift
-    if sh scripts/next-version.sh "$@" >/dev/null 2>&1; then
+    if sh next-version.sh "$@" >/dev/null 2>&1; then
         printf 'FAIL %-28s was accepted\n' "$label"
         failed=$((failed + 1))
     else
-        got="$(sh scripts/next-version.sh "$@" 2>&1 >/dev/null)" || true
+        got="$(sh next-version.sh "$@" 2>&1 >/dev/null)" || true
         want='usage: next-version.sh <current> <scope>'
         if [ "$got" = "$want" ]; then
             printf 'ok   %-28s refused: %s\n' "$label" "$got"

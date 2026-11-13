@@ -1,5 +1,6 @@
 # The rules every pull request of a SpliceFS repository must pass. A repository calls this
-# workflow from its own .github/workflows/rules.yml; see README.md.
+# workflow from its own .github/workflows/rules.yml; see README.md. The number in the file name
+# is the version of this process; see "Versions of these processes" there.
 name: Pull request rules
 
 on:
@@ -39,7 +40,7 @@ jobs:
           # Dependency bots cannot fill in the field. Their updates count as revisions.
           DEFAULT_SCOPE: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'revision' || '' }}
         run: |
-          scope="$(printf '%s\n' "$BODY" | rules/scripts/change-scope.sh)"
+          scope="$(printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-scope.sh)"
           echo "change_scope: $scope"
           echo "scope=$scope" >> "$GITHUB_OUTPUT"
 
@@ -71,12 +72,14 @@ jobs:
           path: work
           fetch-depth: 0
           token: ${{ steps.bot.outputs.token || github.token }}
+      # The base version is the higher of VERSION and the highest release tag on the target
+      # branch, so the tags come with it.
       - name: Version of the target branch
         working-directory: work
         env:
           BASE_REPO: ${{ github.server_url }}/${{ github.repository }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-        run: git fetch --no-tags "$BASE_REPO" "+refs/heads/$BASE_BRANCH:refs/remotes/target/$BASE_BRANCH"
+        run: git fetch --tags "$BASE_REPO" "+refs/heads/$BASE_BRANCH:refs/remotes/target/$BASE_BRANCH"
       - name: Set the version in the branch
         if: github.event.pull_request.head.repo.full_name == github.repository
         working-directory: work
@@ -85,7 +88,7 @@ jobs:
           BASE_REF: target/${{ github.event.pull_request.base.ref }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          result="$(../rules/scripts/set-version.sh "$SCOPE")"
+          result="$(../rules/processes/pull-request-rules/v1/set-version.sh "$SCOPE")"
           echo "$result"
           case "$result" in
             *"(committed)")
@@ -101,8 +104,8 @@ jobs:
           SCOPE: ${{ needs.scope.outputs.scope }}
           BASE_REF: target/${{ github.event.pull_request.base.ref }}
         run: |
-          base="$(git show "$BASE_REF:VERSION" 2>/dev/null || echo 0.0.0)"
-          want="$(../rules/scripts/next-version.sh "$base" "$SCOPE")"
+          base="$(../rules/processes/pull-request-rules/v1/base-version.sh "$BASE_REF")"
+          want="$(../rules/processes/pull-request-rules/v1/next-version.sh "$base" "$SCOPE")"
           have="$(cat VERSION 2>/dev/null || true)"
           if [ "$have" != "$want" ]; then
             echo "::error::VERSION must be $want (target has $base, change_scope is $SCOPE); it is '$have'."

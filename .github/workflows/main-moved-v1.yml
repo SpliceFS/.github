@@ -69,6 +69,13 @@ jobs:
   rebase:
     name: Rebuild open pull requests
     runs-on: ubuntu-latest
+    # Two pushes to main close together would rebuild the same branches at once, and the
+    # second push of a branch would fail on the first one's. One rebuild runs at a time per
+    # repository. A waiting run that a newer one replaces is not needed, because the newer run
+    # rebuilds on the newer tip. The tag job stays outside this group: every merge needs its tag.
+    concurrency:
+      group: main-moved-rebuild-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Rules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

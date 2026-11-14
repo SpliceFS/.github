@@ -48,7 +48,7 @@ if [ "$has_version_commit" -eq 0 ] && [ "$base" = "$onto_commit" ]; then
 fi
 
 [ -z "$(git rev-list --merges "$range")" ] ||
-    fail "$branch has merge commits; rebase it by hand" 2
+    fail "$branch has merge commits; merge $onto into it by hand" 2
 
 # git itself refuses to move a checked-out branch under a working tree, and so do we.
 if git worktree list --porcelain | grep -Fqx "branch refs/heads/$branch"; then

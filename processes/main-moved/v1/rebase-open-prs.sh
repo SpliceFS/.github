@@ -45,7 +45,7 @@ while read -r number branch head_repo; do
             ;;
         2 | 3)
             gh pr comment "$number" --repo "$repo" --body \
-                "\`$base\` moved and this branch could not be rebuilt on it automatically: $out. Rebase it on \`$base\` by hand and push; the checks then set the version again." \
+                "\`$base\` moved and this branch could not be rebuilt on it automatically: $out. Merge \`$base\` into this branch locally, resolve the conflict there, and push; the checks then set the version again." \
                 >/dev/null || true
             ;;
         *)

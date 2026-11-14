@@ -1,0 +1,153 @@
+# What happens when the shared code (SpliceFS/common) has a new version: a pull request is
+# opened in the server that moves it to that version, and after the server's release the same
+# pull request is opened in the client. The server goes first because of the compatibility
+# rule: a server is never older than the clients that talk to it.
+#
+# common calls this workflow for the server when its main branch moved, and the server calls
+# it for the client after each of its releases. The version is read from the caller: the
+# VERSION file of common, or the line of the server's go.mod that names common. See README.md.
+# The number in the file name is the version of this process; see "Versions of these processes"
+# there.
+name: Follow common
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: "The repository that is moved to the new version: server or client"
+        required: true
+        type: string
+    secrets:
+      merge-bot-token:
+        description: Token of the account splicefs-bot, which opens and merges the pull request
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # The author of the commits this automation writes: the account splicefs-bot, whose address
+  # is the project's own.
+  BOT_NAME: "splicefs-bot"
+  BOT_EMAIL: "bot@splicefs.org"
+
+jobs:
+  follow:
+    name: Open the change
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the repository name
+        env:
+          TARGET: ${{ inputs.repository }}
+        run: |
+          case "$TARGET" in
+            server | client) ;;
+            *) echo "::error::'$TARGET' is not server or client"; exit 1 ;;
+          esac
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: The caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          persist-credentials: false
+      - name: Read the version of the shared code from the caller
+        id: version
+        env:
+          CALLER: ${{ github.repository }}
+        run: |
+          if [ "$CALLER" = "SpliceFS/common" ]; then
+            version="$(cat caller/VERSION)"
+          else
+            # The same line plan.sh reads in the target; here only the version is wanted.
+            version="$(sed -n 's|^[[:space:]]*\(require[[:space:]]\{1,\}\)\{0,1\}github\.com/SpliceFS/common v\([0-9][0-9.]*\).*$|\2|p' caller/go.mod)"
+          fi
+          case "$version" in
+            *[!0-9.]* | "" | .* | *. | *..*) echo "::error::the caller names the version '$version'"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "The shared code is at version $version."
+      # Its change log is where the entry of the pull request comes from.
+      - name: The shared code at that version
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/common
+          ref: v${{ steps.version.outputs.version }}
+          path: common
+          persist-credentials: false
+      # The bot's token is used, not the workflow's own: the workflow's token cannot write to
+      # another repository, and a pull request made with it would start no checks.
+      - name: The target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/${{ inputs.repository }}
+          token: ${{ secrets.merge-bot-token }}
+          path: target
+      - name: Decide whether the target has to move
+        id: plan
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sh rules/processes/follow-common/v1/plan.sh target/go.mod "$VERSION" | tee -a "$GITHUB_OUTPUT"
+      - name: Go
+        if: steps.plan.outputs.scope != 'none'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: target/go.mod
+          cache: false
+      - name: Move the target to the version
+        if: steps.plan.outputs.scope != 'none'
+        working-directory: target
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # A version that was tagged a moment ago can be unknown to the Go module proxy for a
+          # short time, so the download is tried again before it counts as a failure.
+          tries=0
+          until go get "github.com/SpliceFS/common@v$VERSION"; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 6 ]; then
+              echo "::error::version $VERSION of the shared code cannot be downloaded"
+              exit 1
+            fi
+            sleep 30
+          done
+          go mod tidy
+          git status --short
+      - name: Open the pull request
+        if: steps.plan.outputs.scope != 'none'
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ secrets.merge-bot-token }}
+          TARGET: SpliceFS/${{ inputs.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FROM: ${{ steps.plan.outputs.from }}
+          SCOPE: ${{ steps.plan.outputs.scope }}
+          GIT_AUTHOR_NAME: ${{ env.BOT_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ env.BOT_EMAIL }}
+          GIT_COMMITTER_NAME: ${{ env.BOT_NAME }}
+          GIT_COMMITTER_EMAIL: ${{ env.BOT_EMAIL }}
+        run: |
+          branch="common-v$VERSION"
+          # A second run for the same version (a rerun, or a release of the server that did
+          # not change the shared code) finds the pull request of the first and stops.
+          existing="$(gh pr list -R "$TARGET" --head "$branch" --state all --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Pull request #$existing already moves $TARGET to version $VERSION."
+            exit 0
+          fi
+          git switch -c "$branch"
+          git add go.mod go.sum
+          git commit -m "Move the shared code to version $VERSION"
+          # Forced, because a branch without a pull request is the leftover of a run that failed.
+          git push --force origin "$branch"
+          sh ../rules/processes/follow-common/v1/body.sh ../common/CHANGELOG.md "$FROM" "$VERSION" "$SCOPE" > ../body.md
+          url="$(gh pr create -R "$TARGET" --head "$branch" --base main \
+            --title "Move the shared code to version $VERSION" --body-file ../body.md)"
+          echo "Opened $url"
+          # It merges by itself once every check passed on the exact code that lands in main.
+          gh pr merge "$url" --merge --auto

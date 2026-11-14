@@ -95,10 +95,30 @@ SpliceFS Release Bot), the secret `CLAUDE_API_KEY` if entries are to be drafted 
 secret of the organization), and a rule on `main` that requires the checks `rules / Change scope`
 and `rules / Version`, requires the branch to be up to date, and allows merge commits only.
 
+## A new version of the shared code
+
+`follow-common-v1.yml` keeps the server and the client on the newest version of the shared
+code (`SpliceFS/common`) without anybody opening a pull request:
+
+1. common merges a change, which is a release with its own version.
+2. common's `main.yml` calls the workflow for the server. It opens a pull request there that
+   moves `go.mod` to the new version. The change scope is `minor` when the first or second
+   number of the version rose and `revision` otherwise, and the change log entry is copied
+   from common's change log.
+3. The pull request merges by itself once its checks pass, and the server is released.
+4. The server's `release.yml` calls the workflow for the client, which gets the same pull
+   request. The server is first because of the compatibility rule above.
+
+A repository that is already on that version or a newer one is left alone, so a release of
+the server that did not change the shared code opens nothing.
+
+Settings: the secret `MERGE_BOT_TOKEN` of the organization, the token of the account
+`splicefs-bot`, which opens and merges these pull requests.
+
 ## Versions of these processes
 
-- Each process has its own number in its file name: `pull-request-rules-v1.yml` and
-  `main-moved-v1.yml`.
+- Each process has its own number in its file name: `pull-request-rules-v1.yml`,
+  `main-moved-v1.yml` and `follow-common-v1.yml`.
 - A change that would break the repositories that call a process is added as a new file with the
   next number, for example `pull-request-rules-v2.yml`. The old file stays until no repository
   calls it.

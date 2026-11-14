@@ -97,23 +97,12 @@ and `rules / Version`, requires the branch to be up to date, and allows merge co
 
 ## A new version of the shared code
 
-`follow-common-v1.yml` keeps the server and the client on the newest version of the shared
-code (`SpliceFS/common`) without anybody opening a pull request:
-
-1. common merges a change, which is a release with its own version.
-2. common's `main.yml` calls the workflow for the server. It opens a pull request there that
-   moves `go.mod` to the new version. The change scope is `minor` when the first or second
-   number of the version rose and `revision` otherwise, and the change log entry is copied
-   from common's change log.
-3. The pull request merges by itself once its checks pass, and the server is released.
-4. The server's `release.yml` calls the workflow for the client, which gets the same pull
-   request. The server is first because of the compatibility rule above.
-
-A repository that is already on that version or a newer one is left alone, so a release of
-the server that did not change the shared code opens nothing.
-
-Settings: the secret `MERGE_BOT_TOKEN` of the organization, the token of the account
-`splicefs-bot`, which opens and merges these pull requests.
+No workflow moves the server or the client to a new version of the shared code
+(`SpliceFS/common`). Whether a change there is backward compatible, and so whether a program
+should take it now, is a judgment no workflow can make. People and AIs do it by hand, by the
+rules in the `CONTRIBUTING.md` of each of the three repositories: whoever changes common updates
+the server and the client accordingly, and whoever changes the server or the client raises its
+common to the newest version it can take without becoming incompatible for no reason.
 
 ## Failure alerts
 
@@ -160,7 +149,7 @@ account to email, written as the plain account name.
 ## Versions of these processes
 
 - Each process has its own number in its file name: `pull-request-rules-v1.yml`,
-  `main-moved-v1.yml`, `follow-common-v1.yml` and `report-failure-v1.yml`.
+  `main-moved-v1.yml` and `report-failure-v1.yml`.
 - A change that would break the repositories that call a process is added as a new file with the
   next number, for example `pull-request-rules-v2.yml`. The old file stays until no repository
   calls it.
@@ -173,7 +162,8 @@ account to email, written as the plain account name.
 - **A pull request from a fork.** The bot cannot push there. The author sets `VERSION` by hand
   and the check verifies it.
 - **A conflict.** A branch that cannot be rebuilt on the new `main` is left as it is, and the bot
-  says so in a comment. Rebase it by hand and push.
+  says so in a comment. Merge `main` into the branch locally, resolve the conflict there, and
+  push.
 
 ## Working on the rules
 

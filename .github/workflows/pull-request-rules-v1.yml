@@ -9,6 +9,9 @@ on:
       bot-private-key:
         description: Private key of the SpliceFS Release Bot
         required: true
+      claude-api-key:
+        description: Key of the Claude API, to draft the change log entry of a pull request that has none
+        required: false
 
 permissions:
   contents: read
@@ -84,6 +87,7 @@ jobs:
       # The author writes the change log entry in the description and the bot writes it into
       # CHANGELOG.md with the version, so nobody has to guess the number the heading needs.
       - name: Read the change log entry from the description
+        id: entry
         env:
           # Passed through the environment, never pasted into the script: the description is
           # text that anyone can write.
@@ -93,11 +97,45 @@ jobs:
           DEFAULT_ENTRY: "${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'Internal: a dependency is updated. Nothing changes for users.' || '' }}"
         run: |
           entry="$RUNNER_TEMP/change-log-entry"
-          if ! printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-log.sh > "$entry"; then
-            echo "::error::The description needs a section '## Change log' with a list of what a user would notice. The message above says what is missing."
+          if printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-log.sh > "$entry" 2> "$RUNNER_TEMP/change-log-problem"; then
+            cat "$entry"
+            echo "found=yes" >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/change-log-problem"
+            echo "found=no" >> "$GITHUB_OUTPUT"
+          fi
+      # An author who leaves the section out or empty gets an entry drafted from the change
+      # itself. It goes into the description, where the author sees it and can change it;
+      # changing the description runs this workflow again. A fork has no key and no bot, so
+      # there the author writes the section.
+      - name: Draft the change log entry from the change
+        if: steps.entry.outputs.found == 'no'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.claude-api-key }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          OWN_BRANCH: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          problem="$(cat "$RUNNER_TEMP/change-log-problem")"
+          if [ "$OWN_BRANCH" != true ] || [ -z "$CLAUDE_API_KEY" ]; then
+            echo "::error::The description needs a section '## Change log' with a list of what a user would notice. $problem"
             exit 1
           fi
+          rules_dir=rules/processes/pull-request-rules/v1
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title"
+          printf '%s\n' "$BODY" > "$RUNNER_TEMP/description"
+          # The version commit of the bot is not part of the change.
+          git -C work diff "$BASE_REF...HEAD" -- . ':(exclude)VERSION' ':(exclude)CHANGELOG.md' > "$RUNNER_TEMP/diff"
+          entry="$RUNNER_TEMP/change-log-entry"
+          "$rules_dir/draft-change-log.sh" "$RUNNER_TEMP/title" "$RUNNER_TEMP/description" "$RUNNER_TEMP/diff" > "$entry"
           cat "$entry"
+          "$rules_dir/put-change-log.sh" "$entry" < "$RUNNER_TEMP/description" > "$RUNNER_TEMP/new-description"
+          gh api -X PATCH "repos/$REPO/pulls/$NUMBER" -F "body=@$RUNNER_TEMP/new-description" --silent
+          echo "the entry was written into the description of the pull request"
       - name: Set the version in the branch
         if: github.event.pull_request.head.repo.full_name == github.repository
         working-directory: work

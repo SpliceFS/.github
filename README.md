@@ -28,8 +28,11 @@ change reaches `main`. They live here once and every repository calls them.
    - The server tells clients its version.
    ```
 
-   A change with nothing for users has one entry that starts with `Internal:`. A missing
-   section or an empty list fails the check. Nobody edits `CHANGELOG.md` by hand.
+   A change with nothing for users has one entry that starts with `Internal:`. Nobody edits
+   `CHANGELOG.md` by hand. When the section is missing or empty in a branch of the repository
+   itself, an entry is drafted from the change by the Claude API and written into the
+   description, where the author sees it and can change it. Without the key, and in a fork,
+   a missing section fails the check.
 4. **The release bot sets the version in the branch.** It reads the latest released version of
    `main` (its release tag, or the file `VERSION` if that is higher), raises it by the scope, and
    adds one commit that writes it to the file `VERSION` and writes the entries of the
@@ -68,6 +71,7 @@ jobs:
     uses: SpliceFS/.github/.github/workflows/pull-request-rules-v1.yml@main
     secrets:
       bot-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+      claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
 ```
 
 `.github/workflows/main.yml`:
@@ -87,7 +91,8 @@ jobs:
 ```
 
 Settings: the secret `RELEASE_BOT_PRIVATE_KEY` and the variable `RELEASE_BOT_APP_ID` (the
-SpliceFS Release Bot), and a rule on `main` that requires the checks `rules / Change scope`
+SpliceFS Release Bot), the secret `CLAUDE_API_KEY` if entries are to be drafted (it can be a
+secret of the organization), and a rule on `main` that requires the checks `rules / Change scope`
 and `rules / Version`, requires the branch to be up to date, and allows merge commits only.
 
 ## Versions of these processes

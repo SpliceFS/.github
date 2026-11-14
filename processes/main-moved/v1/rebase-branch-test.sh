@@ -165,7 +165,7 @@ commit_file d.txt dee 'Move main'
 git checkout -q -b other
 before="$(git rev-parse pr)"
 rb pr main
-eq 'merge commit message' 'rebase: pr has merge commits; rebase it by hand' "$out"
+eq 'merge commit message' 'rebase: pr has merge commits; merge main into it by hand' "$out"
 eq 'merge commit status' 2 "$rc"
 eq 'merge commit leaves the branch' "$before" "$(git rev-parse pr)"
 tidy 'merge commit'

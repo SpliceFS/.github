@@ -115,10 +115,52 @@ the server that did not change the shared code opens nothing.
 Settings: the secret `MERGE_BOT_TOKEN` of the organization, the token of the account
 `splicefs-bot`, which opens and merges these pull requests.
 
+## Failure alerts
+
+`report-failure-v1.yml` emails the owner when an automated workflow fails, and sends nothing
+when it works. GitHub sends no email for a run that the release bot or the merge bot started
+(releases, tags, merges), so a failed run opens an issue in its own repository, assigned to the
+account in the repository variable `ALERT_ASSIGNEE`. GitHub emails the assignee.
+
+- The issue is titled `Failed: <workflow name> (<branch or tag>)` and has the label `failure`.
+  It holds the link to the failed run.
+- While that issue is open, every further failure of the same workflow is a comment on it, with
+  the link to that run. Nothing new is opened, and the assignee still gets an email for each
+  failure.
+- Closing the issue says the failure is dealt with. The next failure opens a new one.
+- Without `ALERT_ASSIGNEE` the issue is still opened, unassigned, and the run prints a
+  warning. Nobody gets an email until the variable is set.
+- If the issue cannot be opened or commented on, the alert job fails, so a broken alert is seen.
+
+A repository calls it from the workflow it wants watched, as a last job that waits for every
+other job of that workflow:
+
+```yaml
+jobs:
+  main:
+    uses: SpliceFS/.github/.github/workflows/main-moved-v1.yml@main
+    secrets:
+      bot-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+  alert:
+    name: Alert
+    needs: [main]
+    if: ${{ failure() }}
+    permissions:
+      issues: write
+    uses: SpliceFS/.github/.github/workflows/report-failure-v1.yml@main
+    with:
+      assignee: ${{ vars.ALERT_ASSIGNEE }}
+```
+
+`needs:` lists every other job of the workflow, so that a failure of any of them runs the alert.
+
+Settings: the variable `ALERT_ASSIGNEE` of the repository (or of the organization) must hold the
+account to email, written as the plain account name.
+
 ## Versions of these processes
 
 - Each process has its own number in its file name: `pull-request-rules-v1.yml`,
-  `main-moved-v1.yml` and `follow-common-v1.yml`.
+  `main-moved-v1.yml`, `follow-common-v1.yml` and `report-failure-v1.yml`.
 - A change that would break the repositories that call a process is added as a new file with the
   next number, for example `pull-request-rules-v2.yml`. The old file stays until no repository
   calls it.

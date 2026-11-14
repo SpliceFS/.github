@@ -10,11 +10,17 @@ trap 'exit 1' HUP INT TERM
 failed=0
 cases=0
 
-# The stub. It writes one line per call to "calls" (the body of a call goes to "body" so the
-# line stays one line), and answers as the files in its folder say:
-#   open-issues  what "gh issue list" prints, one "number title" line per issue
-#   labels       the labels the repository has; creating one that is listed fails as gh does
-#   fail         "<word> <word>" of a call that must fail, for example "issue create"
+# The stub. It writes one line per call to "calls" (the body of a call goes to "body", the
+# comment of a close to "comment", so the line stays one line), and answers as the files in its
+# folder say:
+#   open-issues        what the first "gh issue list" prints, one "number title" line per issue
+#   open-issues-after  what every later "gh issue list" prints, when the file is there: the
+#                      issues that appeared since the first list. Without it the answer stays.
+#   fail-second-list   the second "gh issue list" fails
+#   new-issue-number   the number of the issue that "gh issue create" makes, 99 when absent
+#   labels             the labels the repository has; creating one that is listed fails as gh does
+#   fail               "<word> <word>" of a call that must fail, for example "issue create"
+# It records the issues that were closed in "closed".
 mkdir "$work/bin"
 cat >"$work/bin/gh" <<'EOF'
 #!/bin/sh
@@ -24,6 +30,10 @@ for arg in "$@"; do
     if [ "$prev" = '--body' ]; then
         printf '%s\n' "$arg" >"$STUB_DIR/body"
         arg='(body)'
+    fi
+    if [ "$prev" = '--comment' ]; then
+        printf '%s\n' "$arg" >"$STUB_DIR/comment"
+        arg='(comment)'
     fi
     line="$line $arg"
     prev="$arg"
@@ -37,8 +47,19 @@ fi
 
 case "$1 $2" in
     'issue list')
-        if [ -f "$STUB_DIR/open-issues" ]; then
-            cat "$STUB_DIR/open-issues"
+        answer="$STUB_DIR/open-issues"
+        if [ -f "$STUB_DIR/listed" ]; then
+            if [ -f "$STUB_DIR/fail-second-list" ]; then
+                echo 'gh: simulated failure (HTTP 500)' >&2
+                exit 1
+            fi
+            if [ -f "$STUB_DIR/open-issues-after" ]; then
+                answer="$STUB_DIR/open-issues-after"
+            fi
+        fi
+        : >"$STUB_DIR/listed"
+        if [ -f "$answer" ]; then
+            cat "$answer"
         fi
         ;;
     'label create')
@@ -49,7 +70,14 @@ case "$1 $2" in
         printf '%s\n' "$3" >>"$STUB_DIR/labels"
         ;;
     'issue create')
-        echo 'https://github.example.com/example-org/example-repo/issues/99'
+        number=99
+        if [ -f "$STUB_DIR/new-issue-number" ]; then
+            number="$(cat "$STUB_DIR/new-issue-number")"
+        fi
+        echo "https://github.example.com/example-org/example-repo/issues/$number"
+        ;;
+    'issue close')
+        printf '%s\n' "$3" >>"$STUB_DIR/closed"
         ;;
     'issue comment')
         echo 'https://github.example.com/example-org/example-repo/issues/7#issuecomment-1'
@@ -69,6 +97,7 @@ new_case() {
     mkdir "$case_dir"
     : >"$case_dir/calls"
     : >"$case_dir/labels"
+    : >"$case_dir/closed"
     workflow='Main moved'
     ref='main'
     run_id='123'
@@ -129,7 +158,7 @@ expect_text() {
     if [ "$2" = out ]; then
         text="$out"
     else
-        text="$(cat "$case_dir/$2")"
+        text="$(cat "$case_dir/$2" 2>/dev/null || true)"
     fi
     case "$text" in
         *"$3"*) ok "$1" ;;
@@ -147,6 +176,22 @@ expect_not_in_calls() {
     fi
 }
 
+# $1 label, $2 the numbers of the issues that are open at the end, in the order of the second
+# list of issues: that list, less the issues that were closed.
+expect_open_at_end() {
+    left=''
+    while read -r number _; do
+        if ! grep -qxF "$number" "$case_dir/closed"; then
+            left="$left $number"
+        fi
+    done <"$case_dir/open-issues-after"
+    if [ "${left# }" = "$2" ]; then
+        ok "$1"
+    else
+        bad "$1: open at the end are \"${left# }\", wanted \"$2\""
+    fi
+}
+
 repo_flag='--repo example-org/example-repo'
 list_call="issue list $repo_flag --state open --label failure"
 
@@ -154,11 +199,12 @@ list_call="issue list $repo_flag --state open --label failure"
 new_case
 run_script
 expect_status 'none open' 0
-expect_call_count 'none open: three calls' 3
+expect_call_count 'none open: four calls' 4
 expect_call 'none open: looks for open issues with the label' 1 "$list_call"
 expect_call 'none open: creates the label' 2 "label create failure $repo_flag"
 expect_call 'none open: opens an assigned issue' 3 \
     "issue create $repo_flag --title Failed: Main moved (main) --label failure --assignee alert-owner --body (body)"
+expect_call 'none open: looks again after creating' 4 "$list_call"
 expect_text 'none open: body has the link to the run' body \
     'Run: https://github.example.com/example-org/example-repo/actions/runs/123/attempts/1'
 expect_text 'none open: body says how to deal with it' body 'Close this issue'
@@ -185,7 +231,7 @@ printf '%s\n' '9 Failed: Main moved (other)' '8 Failed: Other (main)' >"$case_di
 run_script
 expect_status 'others open' 0
 expect_not_in_calls 'others open: no comment' 'issue comment'
-expect_call_count 'others open: three calls' 3
+expect_call_count 'others open: four calls' 4
 expect_call 'others open: opens a new issue' 3 "issue create $repo_flag --title Failed: Main moved (main)"
 
 # 4. The label is missing: it is created and the issue is opened.
@@ -245,6 +291,87 @@ run_script
 expect_status 'no run id' 1
 expect_text 'no run id: names it' out 'RUN_ID'
 expect_call_count 'no run id: nothing was called' 0
+
+# 9. Two runs of one workflow fail at the same moment. The other run creates its issue between
+#    the first list of this run and its create, which the stub shows as a second list that is
+#    different from the first. This run made issue 12. Whatever the order, one issue stays open.
+same='Failed: Main moved (main)'
+
+new_case
+echo 12 >"$case_dir/new-issue-number"
+printf '%s\n' "12 $same" >"$case_dir/open-issues-after"
+run_script
+expect_status 'alone' 0
+expect_call_count 'alone: four calls' 4
+expect_call 'alone: looks again after creating' 4 "$list_call"
+expect_not_in_calls 'alone: nothing closed' 'issue close'
+expect_not_in_calls 'alone: no comment' 'issue comment'
+expect_open_at_end 'alone: its own issue is open' '12'
+
+# The lower issue is 7 and ours is 12: as text "12" sorts before "7", so a text comparison
+# would keep the wrong one. The list is newest first, as gh prints it.
+new_case
+echo 12 >"$case_dir/new-issue-number"
+printf '%s\n' "12 $same" "7 $same" >"$case_dir/open-issues-after"
+run_script
+expect_status 'lower appears' 0
+expect_call_count 'lower appears: six calls' 6
+expect_call 'lower appears: comments on the lower issue' 5 "issue comment 7 $repo_flag --body (body)"
+expect_text 'lower appears: the comment has the link to this run' body \
+    'Failed again: https://github.example.com/example-org/example-repo/actions/runs/123/attempts/1'
+expect_call 'lower appears: closes its own issue' 6 "issue close 12 $repo_flag --comment (comment)"
+expect_text 'lower appears: says why it was closed' comment 'Same failure as #7'
+expect_open_at_end 'lower appears: only the lower issue is open' '7'
+
+# Ours is 9 and the other is 10: we are the lowest, the other run closes its own issue.
+new_case
+echo 9 >"$case_dir/new-issue-number"
+printf '%s\n' "10 $same" "9 $same" >"$case_dir/open-issues-after"
+run_script
+expect_status 'higher appears' 0
+expect_call_count 'higher appears: four calls' 4
+expect_not_in_calls 'higher appears: nothing closed' 'issue close'
+expect_not_in_calls 'higher appears: no comment' 'issue comment'
+
+# A lower issue of another workflow or another ref is none of our business.
+new_case
+echo 12 >"$case_dir/new-issue-number"
+printf '%s\n' "12 $same" '8 Failed: Other (main)' '5 Failed: Main moved (other)' \
+    >"$case_dir/open-issues-after"
+run_script
+expect_status 'other title appears' 0
+expect_call_count 'other title appears: four calls' 4
+expect_not_in_calls 'other title appears: nothing closed' 'issue close'
+expect_not_in_calls 'other title appears: no comment' 'issue comment'
+
+new_case
+echo 12 >"$case_dir/new-issue-number"
+printf '%s\n' "12 $same" "7 $same" >"$case_dir/open-issues-after"
+echo 'issue close' >"$case_dir/fail"
+run_script
+expect_status 'close fails' 1
+expect_text 'close fails: says so' out 'report-failure: cannot close issue #12'
+
+new_case
+echo 12 >"$case_dir/new-issue-number"
+printf '%s\n' "12 $same" "7 $same" >"$case_dir/open-issues-after"
+echo 'issue comment' >"$case_dir/fail"
+run_script
+expect_status 'comment on the lower fails' 1
+expect_text 'comment on the lower fails: says so' out 'report-failure: cannot comment on issue #7'
+expect_not_in_calls 'comment on the lower fails: its own issue stays open' 'issue close'
+
+new_case
+touch "$case_dir/fail-second-list"
+run_script
+expect_status 'second list fails' 1
+expect_text 'second list fails: says so' out 'report-failure: cannot list the open issues'
+
+new_case
+echo 'twelve' >"$case_dir/new-issue-number"
+run_script
+expect_status 'no number in the address' 1
+expect_text 'no number in the address: says so' out 'report-failure: cannot read the issue number from'
 
 if [ "$failed" -ne 0 ]; then
     printf '%s checks failed\n' "$failed"

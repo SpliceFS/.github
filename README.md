@@ -116,6 +116,8 @@ account in the repository variable `ALERT_ASSIGNEE`. GitHub emails the assignee.
 - While that issue is open, every further failure of the same workflow is a comment on it, with
   the link to that run. Nothing new is opened, and the assignee still gets an email for each
   failure.
+- Two failures of the same workflow at the same moment still end with one open issue: the run
+  that created the higher-numbered issue comments its link on the lower one and closes its own.
 - Closing the issue says the failure is dealt with. The next failure opens a new one.
 - Without `ALERT_ASSIGNEE` the issue is still opened, unassigned, and the run prints a
   warning. Nobody gets an email until the variable is set.

@@ -48,22 +48,25 @@ ensure_label() {
     fail "cannot create the label $label"
 }
 
-# One line per open issue that has the label: number, a space, title. The title is compared
-# here and not put into a search query, so that quotes or search words in a workflow name
-# cannot make it match another issue.
-open_issues="$(gh issue list --repo "$repo" --state open --label "$label" --limit 200 \
-    --json number,title --jq '.[] | "\(.number) \(.title)"')" ||
-    fail 'cannot list the open issues'
-
-existing=''
-while read -r number name; do
-    if [ "$name" = "$title" ]; then
-        existing="$number"
-        break
-    fi
-done <<EOF
+# The numbers of the open issues that have the label and exactly this title, one per line, in
+# the order gh lists them. The title is compared here and not put into a search query, so that
+# quotes or search words in a workflow name cannot make it match another issue. Called as
+# "$(matching_numbers)": the caller has to stop when this fails.
+matching_numbers() {
+    open_issues="$(gh issue list --repo "$repo" --state open --label "$label" --limit 200 \
+        --json number,title --jq '.[] | "\(.number) \(.title)"')" ||
+        fail 'cannot list the open issues'
+    while read -r number name; do
+        if [ "$name" = "$title" ]; then
+            printf '%s\n' "$number"
+        fi
+    done <<EOF
 $open_issues
 EOF
+}
+
+matches="$(matching_numbers)" || exit 1
+existing="$(printf '%s\n' "$matches" | head -n 1)"
 
 # A workflow that keeps failing gets one issue. Every failure is still a comment, and a comment
 # is a mail to the assignee.
@@ -83,4 +86,30 @@ if [ -n "$assignee" ]; then
 else
     echo '::warning::ALERT_ASSIGNEE is not set. The issue is not assigned, so nobody gets an email until the repository variable holds the account to email.'
 fi
-gh issue create "$@" --body "$body" || fail 'cannot create the issue'
+created="$(gh issue create "$@" --body "$body")" || fail 'cannot create the issue'
+printf '%s\n' "$created"
+mine="${created##*/}"
+case "$mine" in
+    '' | *[!0-9]*) fail "cannot read the issue number from: $created" ;;
+    *) ;;
+esac
+
+# Two runs of one workflow can fail at the same moment, both find no issue above, and both create
+# one. Each run therefore looks again after creating, and the lowest number is the issue that
+# stays. The run that created later always sees the earlier issue in this second list, so
+# however two runs interleave, one issue stays open and it holds both run links. A concurrency
+# group would cancel a waiting run when a third arrives, and every failure has to be reported.
+matches="$(matching_numbers)" || exit 1
+kept="$mine"
+for number in $matches; do
+    if [ "$number" -lt "$kept" ]; then
+        kept="$number"
+    fi
+done
+
+if [ "$kept" != "$mine" ]; then
+    gh issue comment "$kept" --repo "$repo" --body "Failed again: $run_url" ||
+        fail "cannot comment on issue #$kept"
+    gh issue close "$mine" --repo "$repo" --comment "Same failure as #$kept" ||
+        fail "cannot close issue #$mine"
+fi

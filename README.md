@@ -162,7 +162,8 @@ account to email, written as the plain account name.
 - **A pull request from a fork.** The bot cannot push there. The author sets `VERSION` by hand
   and the check verifies it.
 - **A conflict.** A branch that cannot be rebuilt on the new `main` is left as it is, and the bot
-  says so in a comment. Rebase it by hand and push.
+  says so in a comment. Merge `main` into the branch locally, resolve the conflict there, and
+  push.
 
 ## Working on the rules
 

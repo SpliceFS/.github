@@ -81,11 +81,29 @@ jobs:
           BASE_REPO: ${{ github.server_url }}/${{ github.repository }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: git fetch --tags "$BASE_REPO" "+refs/heads/$BASE_BRANCH:refs/remotes/target/$BASE_BRANCH"
+      # The author writes the change log entry in the description and the bot writes it into
+      # CHANGELOG.md with the version, so nobody has to guess the number the heading needs.
+      - name: Read the change log entry from the description
+        env:
+          # Passed through the environment, never pasted into the script: the description is
+          # text that anyone can write.
+          BODY: ${{ github.event.pull_request.body }}
+          # Dependency bots cannot fill in the section.
+          # In double quotes because the text holds a colon followed by a space.
+          DEFAULT_ENTRY: "${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'Internal: a dependency is updated. Nothing changes for users.' || '' }}"
+        run: |
+          entry="$RUNNER_TEMP/change-log-entry"
+          if ! printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-log.sh > "$entry"; then
+            echo "::error::The description needs a section '## Change log' with a list of what a user would notice. The message above says what is missing."
+            exit 1
+          fi
+          cat "$entry"
       - name: Set the version in the branch
         if: github.event.pull_request.head.repo.full_name == github.repository
         working-directory: work
         env:
           SCOPE: ${{ needs.scope.outputs.scope }}
+          CHANGELOG_ENTRY_FILE: ${{ runner.temp }}/change-log-entry
           BASE_REF: target/${{ github.event.pull_request.base.ref }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
@@ -110,6 +128,12 @@ jobs:
           have="$(cat VERSION 2>/dev/null || true)"
           if [ "$have" != "$want" ]; then
             echo "::error::VERSION must be $want (target has $base, change_scope is $SCOPE); it is '$have'."
+            exit 1
+          fi
+          # The bot writes the heading in a branch of the repository itself. In a fork the
+          # author does, with the entries of the description.
+          if [ -f CHANGELOG.md ] && ! grep -q -F "## [$want] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md needs the heading '## [$want] - <date>' with the entries of the Change log section of the description."
             exit 1
           fi
           echo "version: $want"

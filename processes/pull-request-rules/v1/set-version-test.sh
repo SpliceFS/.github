@@ -1,6 +1,7 @@
 #!/bin/sh
 # Test of set-version.sh in throwaway git repositories: first version, revision and minor,
-# unchanged, correcting a wrong committed value, and every refusal. Part of make check.
+# unchanged, correcting a wrong committed value, the change log section, and every refusal. Part
+# of make check.
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -22,8 +23,9 @@ eq() {
 # Explicit identity so the test never depends on the machine's git configuration.
 tg() { git -c user.name=Dev -c user.email=dev@example.com -c commit.gpgsign=false "$@"; }
 
-# $1 repository name, $2 VERSION on the base branch (empty for no file). Leaves the shell inside
-# the new repository on branch pr, one commit after origin/main.
+# $1 repository name, $2 VERSION on the base branch (empty for no file), $3 optional file that
+# becomes CHANGELOG.md on the base branch. Leaves the shell inside the new repository on branch pr,
+# one commit after origin/main.
 newrepo() {
     rm -rf "${work:?}/$1"
     mkdir "$work/$1"
@@ -32,6 +34,7 @@ newrepo() {
     git symbolic-ref HEAD refs/heads/main
     echo hello >README
     if [ -n "$2" ]; then echo "$2" >VERSION; fi
+    if [ -n "${3:-}" ]; then cp "$3" CHANGELOG.md; fi
     git add -A
     tg commit -q -m Base
     git update-ref refs/remotes/origin/main HEAD
@@ -69,6 +72,65 @@ expect_refused() {
     sv "$@"
     if [ "$rc" -ne 0 ]; then eq "$label" "$want" "$out"; else fail "$label: accepted: $out"; fi
 }
+
+# Runs the script with the bot identity, the entry file $entry and the fixed date; sets rc and out.
+svc() {
+    rc=0
+    out="$(CHANGELOG_ENTRY_FILE="$entry" CHANGELOG_DATE=2026-11-13 \
+        BOT_NAME=Bot BOT_EMAIL=bot@example.com sh "$script" "$@" 2>&1)" || rc=$?
+}
+
+# $1 label, $2 wanted output, then the arguments; like expect_ok, with the change log inputs.
+expect_ok_log() {
+    label="$1"
+    want="$2"
+    shift 2
+    svc "$@"
+    if [ "$rc" -eq 0 ]; then eq "$label" "$want" "$out"; else fail "$label: refused: $out"; fi
+}
+
+# $1 label, $2 wanted message, then the arguments; like expect_refused, with the change log inputs.
+expect_refused_log() {
+    label="$1"
+    want="$2"
+    shift 2
+    svc "$@"
+    if [ "$rc" -ne 0 ]; then eq "$label" "$want" "$out"; else fail "$label: accepted: $out"; fi
+}
+
+# $1 label. Compares CHANGELOG.md byte for byte with the intro of the base file, the new section
+# in $work/section.md, and the older sections of the base file.
+log_is() {
+    cat "$work/head.md" "$work/section.md" "$work/tail.md" >"$work/want.md"
+    if cmp -s "$work/want.md" CHANGELOG.md; then
+        pass "$1"
+    else
+        fail "$1: $(diff "$work/want.md" CHANGELOG.md | head -8)"
+    fi
+}
+
+# $1 label. Compares CHANGELOG.md byte for byte with the base file.
+log_is_base() {
+    if cmp -s "$work/base.md" CHANGELOG.md; then
+        pass "$1"
+    else
+        fail "$1: $(diff "$work/base.md" CHANGELOG.md | head -8)"
+    fi
+}
+
+# The change log of the base branch: an intro and two sections, one of them wrapped.
+printf '%s\n' '# Changelog' '' 'Intro text.' '' >"$work/head.md"
+printf '%s\n' \
+    '## [0.3.2] - 2026-11-12' \
+    '' \
+    '- An older entry that was wrapped at one hundred columns by the bot in an earlier' \
+    '  release.' \
+    '' \
+    '## [0.3.1] - 2026-11-11' \
+    '' \
+    '- The oldest entry.' >"$work/tail.md"
+cat "$work/head.md" "$work/tail.md" >"$work/base.md"
+entry="$work/entry.txt"
 
 newrepo first ''
 expect_ok 'no VERSION on base, minor' 'version: 0.1.0 (committed)' minor
@@ -204,6 +266,171 @@ newrepo usage 1.2.3
 rc=0
 out="$(sh "$script" 2>&1)" || rc=$?
 refused 'no arguments print usage' 'usage: set-version.sh <scope>'
+
+printf '%s\n' '- The server tells clients its version.' >"$entry"
+newrepo log 0.3.2 "$work/base.md"
+expect_ok_log 'change log: committed' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' '- The server tells clients its version.' '' \
+    >"$work/section.md"
+log_is 'change log: section before the newest one, date from CHANGELOG_DATE'
+eq 'change log: VERSION and CHANGELOG.md are in one commit' 'CHANGELOG.md
+VERSION' "$(git show --name-only --format= HEAD)"
+eq 'change log: commit subject' 'Set version to 0.3.3' "$(git log -1 --format=%s)"
+eq 'change log: trailer present' 'Version-Commit: true' \
+    "$(git log -1 --format=%B | git interpret-trailers --only-trailers)"
+eq 'change log: commit author is the bot' 'Bot <bot@example.com>' \
+    "$(git log -1 --format='%an <%ae>')"
+eq 'change log: working tree clean' '' "$(git status --porcelain)"
+expect_ok_log 'change log: second run is unchanged' 'version: 0.3.3 (unchanged)' revision
+eq 'change log: unchanged adds no commit' 2 "$(git rev-list --count origin/main..HEAD)"
+log_is 'change log: unchanged leaves the file as it was'
+
+# Boundaries: a line may hold 100 columns, a longer word stays whole, and a bullet starts a line.
+word49="$(printf '%049d' 0 | tr 0 a)"
+word48="$(printf '%048d' 0 | tr 0 b)"
+word120="$(printf '%0120d' 0 | tr 0 c)"
+printf '%s\n' "- $word49 $word48 short $word120 end" '- Second bullet.' >"$entry"
+newrepo wrap 0.3.2 "$work/base.md"
+expect_ok_log 'wrap: committed' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' "- $word49 $word48" '  short' "  $word120" '  end' \
+    '- Second bullet.' '' >"$work/section.md"
+log_is 'wrap: 100 columns fit, longer word whole, continuation with two spaces'
+
+printf '%s\n' '- A path C:\new\table and a * star stay as written.' >"$entry"
+newrepo backslash 0.3.2 "$work/base.md"
+expect_ok_log 'backslash: committed' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' '- A path C:\new\table and a * star stay as written.' \
+    '' \
+    >"$work/section.md"
+log_is 'backslash: entry is written as it is'
+
+# A stale section of this branch and a heading the author typed are replaced. The base sections
+# stay.
+printf '%s\n' '- The entry of the description.' >"$entry"
+newrepo stale 0.3.2 "$work/base.md"
+{
+    cat "$work/head.md"
+    printf '%s\n' '## [1.0.0] - 2026-01-01' '' '- Typed by the author.' ''
+    printf '%s\n' '## [0.3.3] - 2026-11-12' '' '- Entry of an earlier version commit.' ''
+    cat "$work/tail.md"
+} >CHANGELOG.md
+tg commit -q -a -m 'Stale sections'
+expect_ok_log 'stale: committed' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' '- The entry of the description.' '' >"$work/section.md"
+log_is 'stale: other versions removed, new section made, base sections byte for byte'
+
+newrepo stale-last 0.3.2 "$work/base.md"
+{
+    cat "$work/base.md"
+    printf '%s\n' '' '## [0.1.0] - 2020-01-01' '' '- Not in the base.' ''
+} >CHANGELOG.md
+tg commit -q -a -m 'Stale last section'
+expect_ok_log 'stale last section: committed' 'version: 0.3.3 (committed)' revision
+log_is 'stale last section: removed, file ends with one newline'
+
+# An uncommitted edit of CHANGELOG.md is fine: it is rewritten and committed with VERSION.
+newrepo uncommitted-log 0.3.2 "$work/base.md"
+printf '%s\n' '' '## [0.3.3] - 2026-11-01' '' '- Typed, not committed.' >>CHANGELOG.md
+expect_ok_log 'uncommitted change log does not block' 'version: 0.3.3 (committed)' revision
+log_is 'uncommitted change log: replaced by the new section'
+eq 'uncommitted change log: nothing left over' '' "$(git status --porcelain)"
+
+# A changed entry replaces the section of the same version, in a commit of its own.
+newrepo changed 0.3.2 "$work/base.md"
+expect_ok_log 'changed: first entry' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '- The changed entry.' >"$entry"
+expect_ok_log 'changed: new entry is committed' 'version: 0.3.3 (committed)' revision
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' '- The changed entry.' '' >"$work/section.md"
+log_is 'changed: section replaced, not added'
+eq 'changed: a new commit' 3 "$(git rev-list --count origin/main..HEAD)"
+eq 'changed: the section exists once' 1 "$(grep -c '^## \[0.3.3\]' CHANGELOG.md)"
+expect_ok_log 'changed: then unchanged' 'version: 0.3.3 (unchanged)' revision
+
+newrepo changed-scope 0.3.2 "$work/base.md"
+expect_ok_log 'changed scope: revision' 'version: 0.3.3 (committed)' revision
+expect_ok_log 'changed scope: minor' 'version: 0.4.0 (committed)' minor
+printf '%s\n' '## [0.4.0] - 2026-11-13' '' '- The changed entry.' '' >"$work/section.md"
+log_is 'changed scope: the section of the new version only'
+
+# No version heading: the section is appended after one blank line, whatever the file ended with.
+printf '%s\n' '# Changelog' '' 'Intro text.' >"$work/plain.md"
+printf '%s\n' '- First entry.' >"$entry"
+newrepo no-heading '' "$work/plain.md"
+expect_ok_log 'no heading: committed' 'version: 0.0.1 (committed)' revision
+printf '%s\n' '# Changelog' '' 'Intro text.' '' '## [0.0.1] - 2026-11-13' '' '- First entry.' \
+    >"$work/want.md"
+if cmp -s "$work/want.md" CHANGELOG.md; then
+    pass 'no heading: section appended'
+else
+    fail "no heading: $(diff "$work/want.md" CHANGELOG.md | head -8)"
+fi
+printf '%s\n' '# Changelog' '' 'Intro text.' '' '' >"$work/blank-end.md"
+newrepo blank-end '' "$work/blank-end.md"
+expect_ok_log 'blank lines at the end: committed' 'version: 0.0.1 (committed)' revision
+if cmp -s "$work/want.md" CHANGELOG.md; then
+    pass 'blank lines at the end: one blank line before the section'
+else
+    fail "blank lines at the end: $(diff "$work/want.md" CHANGELOG.md | head -8)"
+fi
+
+# Nothing to do with the change log without the file, or without the variable.
+newrepo no-log 1.2.3
+expect_ok_log 'no CHANGELOG.md: as before' 'version: 1.2.4 (committed)' revision
+eq 'no CHANGELOG.md: only VERSION is committed' VERSION "$(git show --name-only --format= HEAD)"
+eq 'no CHANGELOG.md: none is made' no "$([ -e CHANGELOG.md ] && echo yes || echo no)"
+
+newrepo no-variable 0.3.2 "$work/base.md"
+expect_ok 'no variable: as before' 'version: 0.3.3 (committed)' revision
+eq 'no variable: only VERSION is committed' VERSION "$(git show --name-only --format= HEAD)"
+log_is_base 'no variable: CHANGELOG.md is left alone'
+echo changed >>CHANGELOG.md
+expect_refused 'no variable: a changed CHANGELOG.md blocks' \
+    'set-version: the working tree has uncommitted changes besides VERSION' revision
+
+# Refusals of the entry.
+newrepo empty-entry 0.3.2 "$work/base.md"
+: >"$entry"
+before="$(git rev-parse HEAD)"
+expect_refused_log 'empty entry file is refused' \
+    'set-version: CHANGELOG_ENTRY_FILE has no entry' revision
+eq 'empty entry: no commit' "$before" "$(git rev-parse HEAD)"
+eq 'empty entry: VERSION untouched' 0.3.2 "$(cat VERSION)"
+log_is_base 'empty entry: CHANGELOG.md untouched'
+printf '%s\n' 'Text without a bullet.' '' >"$entry"
+expect_refused_log 'entry file without a bullet is refused' \
+    'set-version: CHANGELOG_ENTRY_FILE has no entry' revision
+printf '%s\n' '- ' >"$entry"
+expect_refused_log 'bullet without text is refused' \
+    'set-version: CHANGELOG_ENTRY_FILE has no entry' revision
+entry="$work/no-such-entry.txt"
+expect_refused_log 'missing entry file is refused' \
+    'set-version: CHANGELOG_ENTRY_FILE has no entry' revision
+entry="$work"
+expect_refused_log 'a folder as entry file is refused' \
+    'set-version: CHANGELOG_ENTRY_FILE has no entry' revision
+entry="$work/entry.txt"
+
+# The refusal about the working tree names both files.
+printf '%s\n' '- An entry.' >"$entry"
+newrepo dirty-log 0.3.2 "$work/base.md"
+echo changed >feature.txt
+expect_refused_log 'dirty tree with a change log is refused' \
+    'set-version: the working tree has uncommitted changes besides VERSION and CHANGELOG.md' \
+    revision
+log_is_base 'dirty tree with a change log: CHANGELOG.md untouched'
+
+# A relative path of the entry file is read from where the script was started.
+newrepo relative 0.3.2 "$work/base.md"
+mkdir deep
+printf '%s\n' '- Relative entry.' >deep/entry.txt
+cd deep
+rc=0
+out="$(CHANGELOG_ENTRY_FILE=entry.txt CHANGELOG_DATE=2026-11-13 \
+    BOT_NAME=Bot BOT_EMAIL=bot@example.com sh "$script" revision 2>&1)" || rc=$?
+eq 'relative entry file path' 'version: 0.3.3 (committed)' "$out"
+cd "$work/relative"
+printf '%s\n' '## [0.3.3] - 2026-11-13' '' '- Relative entry.' '' >"$work/section.md"
+log_is 'relative entry file: section written'
 
 cd "$here"
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }

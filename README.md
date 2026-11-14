@@ -19,21 +19,36 @@ change reaches `main`. They live here once and every repository calls them.
    | `major` | never merged | a new major version is a new repository named `<name>_v<major>` |
 
    A missing or invalid line fails the check, whatever the tests say.
-3. **The release bot sets the version in the branch.** It reads the latest released version of
+3. **The description says what a user would notice**, as a list under the heading
+   `## Change log`:
+
+   ```
+   ## Change log
+
+   - The server tells clients its version.
+   ```
+
+   A change with nothing for users has one entry that starts with `Internal:`. A missing
+   section or an empty list fails the check. Nobody edits `CHANGELOG.md` by hand.
+4. **The release bot sets the version in the branch.** It reads the latest released version of
    `main` (its release tag, or the file `VERSION` if that is higher), raises it by the scope, and
-   adds one commit that writes it to the file `VERSION`.
-4. **A pull request always sits on the tip of `main`.** When `main` moves, the bot rebuilds every
+   adds one commit that writes it to the file `VERSION` and writes the entries of the
+   description into `CHANGELOG.md` under a heading for that version.
+5. **A pull request always sits on the tip of `main`.** When `main` moves, the bot rebuilds every
    open pull request on the new tip and sets its version again; the checks run again.
-5. **A pull request merges with one merge commit.** No fast-forward and no squash.
-6. **Every merge is a release.** The merge is tagged `v<VERSION>`, which starts the release of
+6. **A pull request merges with one merge commit.** No fast-forward and no squash.
+7. **Every merge is a release.** The merge is tagged `v<VERSION>`, which starts the release of
    that repository. One change, one version.
 
 ## Versions and compatibility
 
-- Below 1.0.0 nothing is promised, even between a client and a server of the same version.
-- From 1.0.0 on, with the same first number, a client works with every server whose second
-  number is equal or higher. The third number never matters, barring a bug; a bug that
-  affects it is fixed by raising the second number on both sides.
+- With the same first number, a client works with every server whose second number is equal
+  or higher. The third number never matters, barring a bug; a bug that affects it is fixed by
+  raising the second number on both sides.
+- So the server is released first: before a client with a higher second number goes out, a
+  server with that second number is released, even when the server's code did not change.
+- The server tells every client its version, and a client refuses a server that is too old
+  with a message that names both versions. This holds from server 0.4.0 on.
 
 ## Using the rules in a repository
 

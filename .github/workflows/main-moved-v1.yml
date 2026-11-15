@@ -1,0 +1,104 @@
+# What happens when the main branch of a SpliceFS repository moves: the new version is
+# tagged, which starts the release, and every open pull request is rebuilt on the new tip.
+# A repository calls this workflow from its own .github/workflows/main.yml; see README.md.
+# The number in the file name is the version of this process; see "Versions of these processes"
+# there.
+name: Main moved
+
+on:
+  workflow_call:
+    secrets:
+      bot-private-key:
+        description: Private key of the SpliceFS Release Bot
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # The author of the commits this automation writes: the account splicefs-bot, whose address
+  # is the project's own. The release bot only pushes them.
+  BOT_NAME: "splicefs-bot"
+  BOT_EMAIL: "bot@splicefs.org"
+
+jobs:
+  tag:
+    name: Tag the version
+    runs-on: ubuntu-latest
+    steps:
+      # A tag made with the token of the workflow itself would not start the release
+      # workflow. The bot's token does.
+      - name: Bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "No VERSION file; nothing to tag."
+            exit 0
+          fi
+          version="$(cat VERSION)"
+          case "$version" in
+            *[!0-9.]* | "" | .* | *. | *..*) echo "::error::VERSION holds '$version'"; exit 1 ;;
+          esac
+          tag="v$version"
+          if existing="$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha 2>/dev/null)"; then
+            if [ "$existing" = "$SHA" ]; then
+              echo "$tag already points at this commit."
+              exit 0
+            fi
+            # Every change raises the version, so this means a change reached main without
+            # the rules. It must not be released under a number that is already taken.
+            echo "::error::$tag exists on another commit; this commit did not raise VERSION."
+            exit 1
+          fi
+          gh api "repos/$REPO/git/refs" -f "ref=refs/tags/$tag" -f "sha=$SHA" --silent
+          echo "Tagged $SHA as $tag."
+
+  rebase:
+    name: Rebuild open pull requests
+    runs-on: ubuntu-latest
+    # Two pushes to main close together would rebuild the same branches at once, and the
+    # second push of a branch would fail on the first one's. One rebuild runs at a time per
+    # repository. A waiting run that a newer one replaces is not needed, because the newer run
+    # rebuilds on the newer tip. The tag job stays outside this group: every merge needs its tag.
+    concurrency:
+      group: main-moved-rebuild-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: Bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: work
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+      - name: Rebuild every open pull request on the new tip
+        working-directory: work
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: ../rules/processes/main-moved/v1/rebase-open-prs.sh "$REPO" "$BASE_BRANCH"

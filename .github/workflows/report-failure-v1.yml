@@ -1,0 +1,41 @@
+# Tells the owner that a workflow failed: opens an issue in the calling repository, assigned to
+# the person to email. GitHub sends no email for runs started by the release bot or the merge
+# bot, and it sends one for an issue that is assigned to someone. A repository calls this
+# workflow as the last job of its own workflow; see "Failure alerts" in README.md. The number in
+# the file name is the version of this process; see "Versions of these processes" there.
+name: Report failure
+
+on:
+  workflow_call:
+    inputs:
+      assignee:
+        description: "The account to email: the caller passes the repository variable ALERT_ASSIGNEE"
+        required: true
+        type: string
+
+jobs:
+  report:
+    name: Report the failure
+    runs-on: ubuntu-latest
+    # Only issues. The rules are in a public repository, so their checkout needs no more, and
+    # a caller that grants issues only could not call a workflow that asks for contents too.
+    permissions:
+      issues: write
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: Open the issue, or add to the one that is open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+          ASSIGNEE: ${{ inputs.assignee }}
+        run: rules/processes/report-failure/v1/report-failure.sh

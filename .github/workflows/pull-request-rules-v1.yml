@@ -1,0 +1,177 @@
+# The rules every pull request of a SpliceFS repository must pass. A repository calls this
+# workflow from its own .github/workflows/rules.yml; see README.md. The number in the file name
+# is the version of this process; see "Versions of these processes" there.
+name: Pull request rules
+
+on:
+  workflow_call:
+    secrets:
+      bot-private-key:
+        description: Private key of the SpliceFS Release Bot
+        required: true
+      claude-api-key:
+        description: Key of the Claude API, to draft the change log entry of a pull request that has none
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  # The author of the commits this automation writes: the account splicefs-bot, whose address
+  # is the project's own. The release bot only pushes them.
+  BOT_NAME: "splicefs-bot"
+  BOT_EMAIL: "bot@splicefs.org"
+
+jobs:
+  scope:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.read.outputs.scope }}
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      - name: Read change_scope from the description
+        id: read
+        env:
+          # Passed through the environment, never pasted into the script: the description is
+          # text that anyone can write.
+          BODY: ${{ github.event.pull_request.body }}
+          # Dependency bots cannot fill in the field. Their updates count as revisions.
+          DEFAULT_SCOPE: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'revision' || '' }}
+        run: |
+          scope="$(printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-scope.sh)"
+          echo "change_scope: $scope"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+
+  version:
+    name: Version
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/.github
+          path: rules
+          persist-credentials: false
+      # A commit pushed with the token of the workflow itself would not start the checks of
+      # the pull request again. The bot's token does.
+      - name: Bot token
+        id: bot
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.bot-private-key }}
+      - name: Pull request branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: work
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token || github.token }}
+      # The base version is the higher of VERSION and the highest release tag on the target
+      # branch, so the tags come with it.
+      - name: Version of the target branch
+        working-directory: work
+        env:
+          BASE_REPO: ${{ github.server_url }}/${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: git fetch --tags "$BASE_REPO" "+refs/heads/$BASE_BRANCH:refs/remotes/target/$BASE_BRANCH"
+      # The author writes the change log entry in the description and the bot writes it into
+      # CHANGELOG.md with the version, so nobody has to guess the number the heading needs.
+      - name: Read the change log entry from the description
+        id: entry
+        env:
+          # Passed through the environment, never pasted into the script: the description is
+          # text that anyone can write.
+          BODY: ${{ github.event.pull_request.body }}
+          # Dependency bots cannot fill in the section.
+          # In double quotes because the text holds a colon followed by a space.
+          DEFAULT_ENTRY: "${{ github.event.pull_request.user.login == 'dependabot[bot]' && 'Internal: a dependency is updated. Nothing changes for users.' || '' }}"
+        run: |
+          entry="$RUNNER_TEMP/change-log-entry"
+          if printf '%s\n' "$BODY" | rules/processes/pull-request-rules/v1/change-log.sh > "$entry" 2> "$RUNNER_TEMP/change-log-problem"; then
+            cat "$entry"
+            echo "found=yes" >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/change-log-problem"
+            echo "found=no" >> "$GITHUB_OUTPUT"
+          fi
+      # An author who leaves the section out or empty gets an entry drafted from the change
+      # itself. It goes into the description, where the author sees it and can change it;
+      # changing the description runs this workflow again. A fork has no key and no bot, so
+      # there the author writes the section.
+      - name: Draft the change log entry from the change
+        if: steps.entry.outputs.found == 'no'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.claude-api-key }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          OWN_BRANCH: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          problem="$(cat "$RUNNER_TEMP/change-log-problem")"
+          if [ "$OWN_BRANCH" != true ] || [ -z "$CLAUDE_API_KEY" ]; then
+            echo "::error::The description needs a section '## Change log' with a list of what a user would notice. $problem"
+            exit 1
+          fi
+          rules_dir=rules/processes/pull-request-rules/v1
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title"
+          printf '%s\n' "$BODY" > "$RUNNER_TEMP/description"
+          # The version commit of the bot is not part of the change.
+          git -C work diff "$BASE_REF...HEAD" -- . ':(exclude)VERSION' ':(exclude)CHANGELOG.md' > "$RUNNER_TEMP/diff"
+          entry="$RUNNER_TEMP/change-log-entry"
+          "$rules_dir/draft-change-log.sh" "$RUNNER_TEMP/title" "$RUNNER_TEMP/description" "$RUNNER_TEMP/diff" > "$entry"
+          cat "$entry"
+          "$rules_dir/put-change-log.sh" "$entry" < "$RUNNER_TEMP/description" > "$RUNNER_TEMP/new-description"
+          gh api -X PATCH "repos/$REPO/pulls/$NUMBER" -F "body=@$RUNNER_TEMP/new-description" --silent
+          echo "the entry was written into the description of the pull request"
+      - name: Set the version in the branch
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: work
+        env:
+          SCOPE: ${{ needs.scope.outputs.scope }}
+          CHANGELOG_ENTRY_FILE: ${{ runner.temp }}/change-log-entry
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          result="$(../rules/processes/pull-request-rules/v1/set-version.sh "$SCOPE")"
+          echo "$result"
+          case "$result" in
+            *"(committed)")
+              # This push starts the checks again on the commit that will be merged.
+              git push origin "HEAD:refs/heads/$HEAD_BRANCH"
+              ;;
+          esac
+      # The bot cannot push to a fork. There the author sets the version, and this checks it.
+      - name: Check the version in a fork
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        working-directory: work
+        env:
+          SCOPE: ${{ needs.scope.outputs.scope }}
+          BASE_REF: target/${{ github.event.pull_request.base.ref }}
+        run: |
+          base="$(../rules/processes/pull-request-rules/v1/base-version.sh "$BASE_REF")"
+          want="$(../rules/processes/pull-request-rules/v1/next-version.sh "$base" "$SCOPE")"
+          have="$(cat VERSION 2>/dev/null || true)"
+          if [ "$have" != "$want" ]; then
+            echo "::error::VERSION must be $want (target has $base, change_scope is $SCOPE); it is '$have'."
+            exit 1
+          fi
+          # The bot writes the heading in a branch of the repository itself. In a fork the
+          # author does, with the entries of the description.
+          if [ -f CHANGELOG.md ] && ! grep -q -F "## [$want] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md needs the heading '## [$want] - <date>' with the entries of the Change log section of the description."
+            exit 1
+          fi
+          echo "version: $want"
